@@ -1,6 +1,5 @@
 use rust_decimal::Decimal;
 use rust_decimal::prelude::*;
-use rust_decimal_macros::dec;
 
 pub const SATS_PER_BTC: u128 = 100_000_000;
 pub const MICRO_USDC: u128 = 1_000_000;

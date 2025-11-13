@@ -8,7 +8,6 @@ mod engine;
 use engine::orderbook::Side;
 
 mod math;
-use math::*;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct DepositRequest {

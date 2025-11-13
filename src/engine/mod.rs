@@ -81,181 +81,183 @@ pub fn run(rx: Receiver<EngineCommand>) {
                                 continue;
                             }
                         };
-                        let usdc = user.assets.get_mut("USDC").unwrap();
-                        if usdc.available < cost_micro {
+            
+                        let (buyer_btc, buyer_usdc) = {
+                            let assets = &mut user.assets;
+                            let btc_ptr = assets.get_mut("BTC").unwrap() as *mut AssetBalance;
+                            let usdc_ptr = assets.get_mut("USDC").unwrap() as *mut AssetBalance;
+                            unsafe { (&mut *btc_ptr, &mut *usdc_ptr) }
+                        };
+            
+                        if buyer_usdc.available < cost_micro {
                             let _ = tx_oneshot.send("insufficient USDC funds".into());
                             continue;
                         }
-                        usdc.available -= cost_micro;
-                        usdc.locked += cost_micro;
+            
+                        buyer_usdc.available -= cost_micro;
+                        buyer_usdc.locked += cost_micro;
+            
+                        let mut remaining = quantity;
+            
+                        let ask_prices: Vec<u64> = orderbook
+                            .asks
+                            .keys()
+                            .cloned()
+                            .filter(|p| *p <= price)
+                            .collect();
+            
+                        for ask_price in ask_prices {
+                            let queue = orderbook.asks.get_mut(&ask_price).unwrap();
+            
+                            while let Some(mut ask_order) = queue.pop_front() {
+                                let seller = balances.users.get_mut(&ask_order.user_id).unwrap();
+            
+                                let (seller_btc, seller_usdc) = {
+                                    let assets = &mut seller.assets;
+                                    let btc_ptr = assets.get_mut("BTC").unwrap() as *mut AssetBalance;
+                                    let usdc_ptr = assets.get_mut("USDC").unwrap() as *mut AssetBalance;
+                                    unsafe { (&mut *btc_ptr, &mut *usdc_ptr) }
+                                };
+            
+                                let trade_qty = remaining.min(ask_order.quantity);
+                                let trade_cost = calculate_cost_usdc_micro(ask_price, trade_qty).unwrap();
+            
+                                buyer_btc.available += trade_qty;
+                                buyer_usdc.locked -= trade_cost;
+            
+                                seller_btc.locked -= trade_qty;
+                                seller_usdc.available += trade_cost;
+            
+                                ask_order.quantity -= trade_qty;
+                                remaining -= trade_qty;
+            
+                                if ask_order.quantity > 0 {
+                                    queue.push_front(ask_order);
+                                    break;
+                                }
+            
+                                if remaining == 0 {
+                                    break;
+                                }
+                            }
+            
+                            if queue.is_empty() {
+                                orderbook.asks.remove(&ask_price);
+                            }
+            
+                            if remaining == 0 {
+                                break;
+                            }
+                        }
+            
+                        if remaining > 0 {
+                            let order_id = Uuid::new_v4();
+                            order_index.insert(order_id, (Side::Bid, price));
+            
+                            let resting_order = Order {
+                                id: order_id,
+                                user_id,
+                                side: Side::Bid,
+                                price,
+                                quantity: remaining,
+                            };
+            
+                            orderbook.add_order(resting_order);
+                            let _ = tx_oneshot.send(order_id.to_string());
+                        } else {
+                            let _ = tx_oneshot.send("filled".into());
+                        }
                     }
+            
                     Side::Ask => {
-                        let btc = user.assets.get_mut("BTC").unwrap();
-                        if btc.available < quantity {
+                        let (seller_btc, seller_usdc) = {
+                            let assets = &mut user.assets;
+                            let btc_ptr = assets.get_mut("BTC").unwrap() as *mut AssetBalance;
+                            let usdc_ptr = assets.get_mut("USDC").unwrap() as *mut AssetBalance;
+                            unsafe { (&mut *btc_ptr, &mut *usdc_ptr) }
+                        };
+            
+                        if seller_btc.available < quantity {
                             let _ = tx_oneshot.send("insufficient BTC funds".into());
                             continue;
                         }
-                        btc.available -= quantity;
-                        btc.locked += quantity;
-                    }
-                }
             
-                if let Side::Bid = side {
-                    let mut remaining_qty = quantity;
+                        seller_btc.available -= quantity;
+                        seller_btc.locked += quantity;
             
-                    loop {
-                        let best_ask_entry = {
-                            let mut it = orderbook.asks.iter_mut();
-                            it.next()
-                        };
+                        let mut remaining = quantity;
             
-                        let (best_price, queue) = match best_ask_entry {
-                            Some((p, q)) => (*p, q),
-                            None => break,
-                        };
+                        let bid_prices: Vec<u64> = orderbook
+                            .bids
+                            .keys()
+                            .cloned()
+                            .filter(|p| *p >= price)
+                            .collect();
             
-                        if price < best_price {
-                            break;
-                        }
+                        for bid_price in bid_prices {
+                            let queue = orderbook.bids.get_mut(&bid_price).unwrap();
             
-                        let resting = queue.front_mut().unwrap();
-                        let trade_qty = remaining_qty.min(resting.quantity);
-                        let trade_cost = calculate_cost_usdc_micro(best_price, trade_qty).unwrap();
+                            while let Some(mut bid_order) = queue.pop_front() {
+                                let buyer = balances.users.get_mut(&bid_order.user_id).unwrap();
             
-                        let maker = resting.user_id;
-                        let taker = user_id;
+                                let (buyer_btc, buyer_usdc) = {
+                                    let assets = &mut buyer.assets;
+                                    let btc_ptr = assets.get_mut("BTC").unwrap() as *mut AssetBalance;
+                                    let usdc_ptr = assets.get_mut("USDC").unwrap() as *mut AssetBalance;
+                                    unsafe { (&mut *btc_ptr, &mut *usdc_ptr) }
+                                };
             
-                        {
-                            let buyer = balances.users.get_mut(&taker).unwrap();
-                            let btc = buyer.assets.get_mut("BTC").unwrap();
-                            let usdc = buyer.assets.get_mut("USDC").unwrap();
-                            btc.available += trade_qty;
-                            usdc.locked -= trade_cost;
-                        }
+                                let trade_qty = remaining.min(bid_order.quantity);
+                                let trade_cost = calculate_cost_usdc_micro(bid_price, trade_qty).unwrap();
             
-                        {
-                            let seller = balances.users.get_mut(&maker).unwrap();
-                            let btc = seller.assets.get_mut("BTC").unwrap();
-                            let usdc = seller.assets.get_mut("USDC").unwrap();
-                            btc.locked -= trade_qty;
-                            usdc.available += trade_cost;
-                        }
+                                seller_btc.locked -= trade_qty;
+                                seller_usdc.available += trade_cost;
             
-                        resting.quantity -= trade_qty;
-                        remaining_qty -= trade_qty;
+                                buyer_btc.available += trade_qty;
+                                buyer_usdc.locked -= trade_cost;
             
-                        if resting.quantity == 0 {
-                            let finished = queue.pop_front().unwrap();
-                            order_index.remove(&finished.id);
+                                bid_order.quantity -= trade_qty;
+                                remaining -= trade_qty;
+            
+                                if bid_order.quantity > 0 {
+                                    queue.push_front(bid_order);
+                                    break;
+                                }
+            
+                                if remaining == 0 {
+                                    break;
+                                }
+                            }
+            
                             if queue.is_empty() {
-                                orderbook.asks.remove(&best_price);
+                                orderbook.bids.remove(&bid_price);
+                            }
+            
+                            if remaining == 0 {
+                                break;
                             }
                         }
             
-                        if remaining_qty == 0 {
-                            break;
+                        if remaining > 0 {
+                            let order_id = Uuid::new_v4();
+                            order_index.insert(order_id, (Side::Ask, price));
+            
+                            let resting_order = Order {
+                                id: order_id,
+                                user_id,
+                                side: Side::Ask,
+                                price,
+                                quantity: remaining,
+                            };
+            
+                            orderbook.add_order(resting_order);
+                            let _ = tx_oneshot.send(order_id.to_string());
+                        } else {
+                            let _ = tx_oneshot.send("filled".into());
                         }
                     }
-            
-                    if remaining_qty > 0 {
-                        let order_id = Uuid::new_v4();
-                        order_index.insert(order_id, (Side::Bid, price));
-            
-                        let new_order = Order {
-                            id: order_id,
-                            user_id,
-                            side: Side::Bid,
-                            price,
-                            quantity: remaining_qty,
-                        };
-            
-                        orderbook.add_order(new_order);
-                        let _ = tx_oneshot.send(order_id.to_string());
-                    } else {
-                        let _ = tx_oneshot.send("order fully filled".into());
-                    }
-            
-                    continue;
                 }
-            
-                if let Side::Ask = side {
-                    let mut remaining_qty = quantity;
-            
-                    loop {
-                        let best_bid_entry = {
-                            let mut it = orderbook.bids.iter_mut().rev();
-                            it.next()
-                        };
-            
-                        let (best_price, queue) = match best_bid_entry {
-                            Some((p, q)) => (*p, q),
-                            None => break,
-                        };
-            
-                        if price > best_price {
-                            break;
-                        }
-            
-                        let resting = queue.front_mut().unwrap();
-                        let trade_qty = remaining_qty.min(resting.quantity);
-                        let trade_cost = calculate_cost_usdc_micro(best_price, trade_qty).unwrap();
-            
-                        let maker = resting.user_id;
-                        let taker = user_id;
-            
-                        {
-                            let seller = balances.users.get_mut(&taker).unwrap();
-                            let btc = seller.assets.get_mut("BTC").unwrap();
-                            let usdc = seller.assets.get_mut("USDC").unwrap();
-                            btc.locked -= trade_qty;
-                            usdc.available += trade_cost;
-                        }
-            
-                        {
-                            let buyer = balances.users.get_mut(&maker).unwrap();
-                            let btc = buyer.assets.get_mut("BTC").unwrap();
-                            let usdc = buyer.assets.get_mut("USDC").unwrap();
-                            btc.available += trade_qty;
-                            usdc.locked -= trade_cost;
-                        }
-            
-                        resting.quantity -= trade_qty;
-                        remaining_qty -= trade_qty;
-            
-                        if resting.quantity == 0 {
-                            let finished = queue.pop_front().unwrap();
-                            order_index.remove(&finished.id);
-                            if queue.is_empty() {
-                                orderbook.bids.remove(&best_price);
-                            }
-                        }
-            
-                        if remaining_qty == 0 {
-                            break;
-                        }
-                    }
-            
-                    if remaining_qty > 0 {
-                        let order_id = Uuid::new_v4();
-                        order_index.insert(order_id, (Side::Ask, price));
-            
-                        let new_order = Order {
-                            id: order_id,
-                            user_id,
-                            side: Side::Ask,
-                            price,
-                            quantity: remaining_qty,
-                        };
-            
-                        orderbook.add_order(new_order);
-                        let _ = tx_oneshot.send(order_id.to_string());
-                    } else {
-                        let _ = tx_oneshot.send("order fully filled".into());
-                    }
-            
-                    continue;
-                }
-            }            
+            }                        
             EngineCommand::CancelOrder {user_id, order_id, tx_oneshot} => {
                 let (side, price) = match order_index.remove(&order_id) {
                     Some(v) => v,
