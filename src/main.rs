@@ -30,6 +30,12 @@ struct CreateOrderRequest {
     quantity: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct CancelOrderRequest {
+    user_id: String,
+    order_id: String,
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     
@@ -155,20 +161,36 @@ async fn create_order(tx: web::Data<mpsc::Sender<engine::EngineCommand>>, body: 
     }).unwrap();
 
     match rx.await {
-        Ok(msg) => HttpResponse::Ok().body(format!("engine replied: {}", msg)),
+        Ok(order_id) => HttpResponse::Ok().json(serde_json::json!({
+            "msg": "order was created successfully",
+            "order_id": order_id
+        })),
         Err(_) => HttpResponse::InternalServerError().body("engine failed to respond"),
     }
 }
 
 #[post("/cancel_order")]
-async fn cancel_order(tx: web::Data<mpsc::Sender<engine::EngineCommand>>) -> impl Responder {
+async fn cancel_order(tx: web::Data<mpsc::Sender<engine::EngineCommand>>, body: web::Json<CancelOrderRequest>) -> impl Responder {
+    let user_id = match Uuid::parse_str(&body.user_id) {
+        Ok(v) => v,
+        Err(_) => return HttpResponse::BadRequest().body("invalid user id"),
+    };
+    let order_id = match Uuid::parse_str(&body.order_id) {
+        Ok(v) => v,
+        Err(_) => return HttpResponse::BadRequest().body("invalid order id"),
+    };
+
     let (tx_oneshot, rx) = oneshot::channel();
     tx.send(engine::EngineCommand::CancelOrder {
+        user_id,
+        order_id,
         tx_oneshot
     }).unwrap();
-    match rx.await {
-        Ok(msg) => HttpResponse::Ok().body(format!("engine replied: {}", msg)),
-        Err(_) => HttpResponse::InternalServerError().body("engine failed to respond"),
-    }
     
+    match rx.await {
+        Ok(msg) => HttpResponse::Ok().json(serde_json::json!({
+            "msg": msg
+        })),
+        Err(_) => HttpResponse::InternalServerError().body("engine failed to cancel order"),
+    }
 }
