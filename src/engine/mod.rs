@@ -14,7 +14,8 @@ pub enum EngineCommand {
     Deposit { user_id: Uuid, asset: String, amount: u64, tx_oneshot: oneshot::Sender<String> },
     GetBalances { user_id: Uuid, tx_oneshot: oneshot::Sender<Option<UserBalance>> },
     CreateOrder { user_id: Uuid, side: Side, price: u64, quantity: u64, tx_oneshot: oneshot::Sender<String> },
-    CancelOrder { user_id: Uuid, order_id: Uuid, tx_oneshot: oneshot::Sender<String> }
+    CancelOrder { user_id: Uuid, order_id: Uuid, tx_oneshot: oneshot::Sender<String> },
+    GetUserOrders { user_id: Uuid, tx_oneshot: oneshot::Sender<Vec<Order>> }
 }
 
 pub fn run(rx: Receiver<EngineCommand>) {
@@ -312,9 +313,26 @@ pub fn run(rx: Receiver<EngineCommand>) {
 
                 let _ = tx_oneshot.send(format!("order:{} has been cancelled!", order_id));
             }
+            EngineCommand::GetUserOrders { user_id, tx_oneshot } => {
+                let mut user_orders = Vec::new();
+                for (_price, queue) in &orderbook.bids {
+                    for order in queue {
+                        if order.user_id == user_id {
+                            user_orders.push(order.clone());
+                        }
+                    }
+                }
+                for (_price, queue) in &orderbook.asks {
+                    for order in queue {
+                        if order.user_id == user_id {
+                            user_orders.push(order.clone());
+                        }
+                    }
+                }
+                let _ = tx_oneshot.send(user_orders);
+            }
         }
     }
-
 }
 
 fn calculate_cost_usdc_micro(price_micro: u64, qty_sats: u64) -> Option<u64> {

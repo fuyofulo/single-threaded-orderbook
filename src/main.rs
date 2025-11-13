@@ -1,4 +1,4 @@
-use actix_web::{HttpServer, HttpResponse, web, App, Responder, post};
+use actix_web::{HttpServer, HttpResponse, web, App, Responder, post, get};
 use std::sync::mpsc;
 use tokio::sync::oneshot;
 use serde::{Serialize, Deserialize};
@@ -35,6 +35,11 @@ struct CancelOrderRequest {
     order_id: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct GetUserOrdersRequest {
+    user_id: String,
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     
@@ -54,6 +59,7 @@ async fn main() -> std::io::Result<()> {
             .service(get_balances)
             .service(create_order)
             .service(cancel_order)
+            .service(get_user_orders)
     })
     .bind(("127.0.0.1", 8080))?
     .run()
@@ -192,4 +198,23 @@ async fn cancel_order(tx: web::Data<mpsc::Sender<engine::EngineCommand>>, body: 
         })),
         Err(_) => HttpResponse::InternalServerError().body("engine failed to cancel order"),
     }
+}
+
+#[post("/get_user_orders")]
+async fn get_user_orders(tx: web::Data<mpsc::Sender<engine::EngineCommand>>, body: web::Json<GetUserOrdersRequest>) -> impl Responder {
+    let user_id = match Uuid::parse_str(&body.user_id) {
+        Ok(v) => v,
+        Err(_) => return HttpResponse::BadRequest().body("invalid user id"),
+    };
+    let (tx_oneshot, rx) = oneshot::channel();
+    tx.send(engine::EngineCommand::GetUserOrders {
+        user_id,
+        tx_oneshot
+    }).unwrap();
+
+    match rx.await {
+        Ok(list) => HttpResponse::Ok().json(list),
+        Err(_) => HttpResponse::InternalServerError().body("engine failed to respond"),
+    }
+
 }

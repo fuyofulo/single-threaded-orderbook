@@ -1,13 +1,14 @@
 use std::collections::{BTreeMap, VecDeque};
 use uuid::Uuid;
+use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Side {
     Ask, 
     Bid
 }
 
-#[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Order {
     pub id: Uuid,
     pub user_id: Uuid,
