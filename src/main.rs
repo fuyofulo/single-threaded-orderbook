@@ -1,4 +1,4 @@
-use actix_web::{HttpServer, HttpResponse, web, App, Responder, post, get};
+use actix_web::{HttpServer, HttpResponse, web, App, Responder, post};
 use std::sync::mpsc;
 use tokio::sync::oneshot;
 use serde::{Serialize, Deserialize};
