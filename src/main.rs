@@ -1,19 +1,33 @@
 use actix_web::{HttpServer, HttpResponse, web, App, Responder, post};
 use std::sync::mpsc;
 use tokio::sync::oneshot;
+use serde::{Serialize, Deserialize};
+use uuid::Uuid;
 
 mod engine;
+use engine::orderbook::Side;
+
+mod math;
+use math::*;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct DepositRequest {
     user_id: String,
     asset: String,
-    amount: u64,
+    amount: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct GetBalanceRequest {
     user_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct CreateOrderRequest {
+    user_id: String,
+    side: String,
+    price: String,
+    quantity: String,
 }
 
 #[actix_web::main]
@@ -62,11 +76,24 @@ async fn initialize_user(tx: web::Data<mpsc::Sender<engine::EngineCommand>>) -> 
 
 #[post("/deposit")]
 async fn deposit(tx: web::Data<mpsc::Sender<engine::EngineCommand>>, body: web::Json<DepositRequest>) -> impl Responder {
+
+    let amount = match body.asset.to_uppercase().as_str() {
+        "BTC" => match math::btc_to_sats_str(&body.amount) {
+            Ok(v) => v,
+            Err(e) => return HttpResponse::BadRequest().body(e),
+        },
+        "USDC" => match math::usdc_to_micro_usdc(&body.amount) {
+            Ok(v) => v,
+            Err(e) => return HttpResponse::BadRequest().body(e),
+        },
+        _ => return HttpResponse::BadRequest().body("unknown asset"),
+    };
+
     let (tx_oneshot, rx) = oneshot::channel();
     tx.send(engine::EngineCommand::Deposit {
         user_id: Uuid::parse_str(&body.user_id).unwrap(),
-        asset: body.asset.clone(),
-        amount: body.amount,
+        asset: body.asset.to_uppercase(),
+        amount,
         tx_oneshot
     }).unwrap();
 
@@ -80,33 +107,51 @@ async fn deposit(tx: web::Data<mpsc::Sender<engine::EngineCommand>>, body: web::
 
 #[post("/get_balances")]
 async fn get_balances(tx: web::Data<mpsc::Sender<engine::EngineCommand>>, body: web::Json<GetBalanceRequest>) -> impl Responder {
+
     let (tx_oneshot, rx) = oneshot::channel();
+
     tx.send(engine::EngineCommand::GetBalances {
         user_id: Uuid::parse_str(&body.user_id).unwrap(),
         tx_oneshot
     }).unwrap();
 
-    match rx.await {
-        Ok(Some(user_balance)) => HttpResponse::Ok().json(serde_json::json!({
-            "user_id": user_id,
-            "balances": user_balance
-        })),
-        Ok(None) => HttpResponse::Ok().json(serde_json::json!({
-            "error": "user not found"
-        })),
-        Err(_) => HttpResponse::InternalServerError().json(serde_json::json!({
-            "error": "engine failed to respond"
-        }))
-
-    }
+     match rx.await {
+         Ok(Some(user_balance)) => HttpResponse::Ok().json(user_balance),
+         Ok(None) => HttpResponse::Ok().json(serde_json::json!({
+             "error": "user not found"
+         })),
+         Err(_) => HttpResponse::InternalServerError().json(serde_json::json!({
+             "error": "engine failed to respond"
+         }))
+     }
     
 }
 
 #[post("/create_order")]
-async fn create_order(tx: web::Data<mpsc::Sender<engine::EngineCommand>>) -> impl Responder {
+async fn create_order(tx: web::Data<mpsc::Sender<engine::EngineCommand>>, body: web::Json<CreateOrderRequest>) -> impl Responder {
     let (tx_oneshot, rx) = oneshot::channel();
+
+    let side = match body.side.to_lowercase().as_str() {
+        "bid" => Side::Bid,
+        "ask" => Side::Ask,
+        _ => return HttpResponse::BadRequest().body("invalid side"),
+    };
+
+    let price = match math::price_to_micro_str(&body.price) {
+        Ok(v) => v,
+        Err(e) => return HttpResponse::BadRequest().body(e),
+    };
+    let quantity = match math::btc_to_sats_str(&body.quantity) {
+        Ok(v) => v,
+        Err(e) => return HttpResponse::BadRequest().body(e),
+    };
+
     tx.send(engine::EngineCommand::CreateOrder {
-        tx_oneshot
+        user_id: Uuid::parse_str(&body.user_id).unwrap(),
+        side,
+        price,
+        quantity,
+        tx_oneshot,
     }).unwrap();
 
     match rx.await {
