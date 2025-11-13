@@ -64,15 +64,14 @@ pub fn run(rx: Receiver<EngineCommand>) {
                     let _ = tx_oneshot.send(None);
                 }
             }
-            EngineCommand::CreateOrder {user_id, side, price, quantity, tx_oneshot} => {
-
+            EngineCommand::CreateOrder { user_id, side, price, quantity, tx_oneshot } => {
                 let user = if let Some(u) = balances.users.get_mut(&user_id) {
-                    u 
+                    u
                 } else {
                     let _ = tx_oneshot.send("user not found".into());
                     continue;
                 };
-
+            
                 match side {
                     Side::Bid => {
                         let cost_micro = match calculate_cost_usdc_micro(price, quantity) {
@@ -99,25 +98,164 @@ pub fn run(rx: Receiver<EngineCommand>) {
                         btc.available -= quantity;
                         btc.locked += quantity;
                     }
-                } 
-
-                let order_id = Uuid::new_v4();
-
-                order_index.insert(order_id, (side.clone(), price));
-
-                let order = Order {
-                    id: order_id,
-                    user_id,
-                    side: side.clone(),
-                    price,
-                    quantity
-                };
-
-                orderbook.add_order(order.clone());
-                println!("added order: {:?}", order);
-
-                let _ = tx_oneshot.send(order_id.to_string());
-            }
+                }
+            
+                if let Side::Bid = side {
+                    let mut remaining_qty = quantity;
+            
+                    loop {
+                        let best_ask_entry = {
+                            let mut it = orderbook.asks.iter_mut();
+                            it.next()
+                        };
+            
+                        let (best_price, queue) = match best_ask_entry {
+                            Some((p, q)) => (*p, q),
+                            None => break,
+                        };
+            
+                        if price < best_price {
+                            break;
+                        }
+            
+                        let resting = queue.front_mut().unwrap();
+                        let trade_qty = remaining_qty.min(resting.quantity);
+                        let trade_cost = calculate_cost_usdc_micro(best_price, trade_qty).unwrap();
+            
+                        let maker = resting.user_id;
+                        let taker = user_id;
+            
+                        {
+                            let buyer = balances.users.get_mut(&taker).unwrap();
+                            let btc = buyer.assets.get_mut("BTC").unwrap();
+                            let usdc = buyer.assets.get_mut("USDC").unwrap();
+                            btc.available += trade_qty;
+                            usdc.locked -= trade_cost;
+                        }
+            
+                        {
+                            let seller = balances.users.get_mut(&maker).unwrap();
+                            let btc = seller.assets.get_mut("BTC").unwrap();
+                            let usdc = seller.assets.get_mut("USDC").unwrap();
+                            btc.locked -= trade_qty;
+                            usdc.available += trade_cost;
+                        }
+            
+                        resting.quantity -= trade_qty;
+                        remaining_qty -= trade_qty;
+            
+                        if resting.quantity == 0 {
+                            let finished = queue.pop_front().unwrap();
+                            order_index.remove(&finished.id);
+                            if queue.is_empty() {
+                                orderbook.asks.remove(&best_price);
+                            }
+                        }
+            
+                        if remaining_qty == 0 {
+                            break;
+                        }
+                    }
+            
+                    if remaining_qty > 0 {
+                        let order_id = Uuid::new_v4();
+                        order_index.insert(order_id, (Side::Bid, price));
+            
+                        let new_order = Order {
+                            id: order_id,
+                            user_id,
+                            side: Side::Bid,
+                            price,
+                            quantity: remaining_qty,
+                        };
+            
+                        orderbook.add_order(new_order);
+                        let _ = tx_oneshot.send(order_id.to_string());
+                    } else {
+                        let _ = tx_oneshot.send("order fully filled".into());
+                    }
+            
+                    continue;
+                }
+            
+                if let Side::Ask = side {
+                    let mut remaining_qty = quantity;
+            
+                    loop {
+                        let best_bid_entry = {
+                            let mut it = orderbook.bids.iter_mut().rev();
+                            it.next()
+                        };
+            
+                        let (best_price, queue) = match best_bid_entry {
+                            Some((p, q)) => (*p, q),
+                            None => break,
+                        };
+            
+                        if price > best_price {
+                            break;
+                        }
+            
+                        let resting = queue.front_mut().unwrap();
+                        let trade_qty = remaining_qty.min(resting.quantity);
+                        let trade_cost = calculate_cost_usdc_micro(best_price, trade_qty).unwrap();
+            
+                        let maker = resting.user_id;
+                        let taker = user_id;
+            
+                        {
+                            let seller = balances.users.get_mut(&taker).unwrap();
+                            let btc = seller.assets.get_mut("BTC").unwrap();
+                            let usdc = seller.assets.get_mut("USDC").unwrap();
+                            btc.locked -= trade_qty;
+                            usdc.available += trade_cost;
+                        }
+            
+                        {
+                            let buyer = balances.users.get_mut(&maker).unwrap();
+                            let btc = buyer.assets.get_mut("BTC").unwrap();
+                            let usdc = buyer.assets.get_mut("USDC").unwrap();
+                            btc.available += trade_qty;
+                            usdc.locked -= trade_cost;
+                        }
+            
+                        resting.quantity -= trade_qty;
+                        remaining_qty -= trade_qty;
+            
+                        if resting.quantity == 0 {
+                            let finished = queue.pop_front().unwrap();
+                            order_index.remove(&finished.id);
+                            if queue.is_empty() {
+                                orderbook.bids.remove(&best_price);
+                            }
+                        }
+            
+                        if remaining_qty == 0 {
+                            break;
+                        }
+                    }
+            
+                    if remaining_qty > 0 {
+                        let order_id = Uuid::new_v4();
+                        order_index.insert(order_id, (Side::Ask, price));
+            
+                        let new_order = Order {
+                            id: order_id,
+                            user_id,
+                            side: Side::Ask,
+                            price,
+                            quantity: remaining_qty,
+                        };
+            
+                        orderbook.add_order(new_order);
+                        let _ = tx_oneshot.send(order_id.to_string());
+                    } else {
+                        let _ = tx_oneshot.send("order fully filled".into());
+                    }
+            
+                    continue;
+                }
+            }            
             EngineCommand::CancelOrder {user_id, order_id, tx_oneshot} => {
                 let (side, price) = match order_index.remove(&order_id) {
                     Some(v) => v,
