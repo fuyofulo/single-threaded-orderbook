@@ -2,6 +2,8 @@ use std::sync::mpsc::Receiver;
 use uuid::Uuid;
 use std::collections::HashMap;
 use tokio::sync::oneshot;
+use serde::{Serialize, Deserialize};
+use crate::math;
 
 pub mod balance;
 pub mod orderbook;
@@ -15,7 +17,20 @@ pub enum EngineCommand {
     GetBalances { user_id: Uuid, tx_oneshot: oneshot::Sender<Option<UserBalance>> },
     CreateOrder { user_id: Uuid, side: Side, price: u64, quantity: u64, tx_oneshot: oneshot::Sender<String> },
     CancelOrder { user_id: Uuid, order_id: Uuid, tx_oneshot: oneshot::Sender<String> },
-    GetUserOrders { user_id: Uuid, tx_oneshot: oneshot::Sender<Vec<Order>> }
+    GetUserOrders { user_id: Uuid, tx_oneshot: oneshot::Sender<Vec<Order>> },
+    GetDepth { tx_oneshot: oneshot::Sender<DepthResponse> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)] 
+pub struct DepthLevel {
+    pub price: String,
+    pub quantity: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DepthResponse {
+    pub bids: Vec<DepthLevel>,
+    pub asks: Vec<DepthLevel>,
 }
 
 pub fn run(rx: Receiver<EngineCommand>) {
@@ -330,6 +345,32 @@ pub fn run(rx: Receiver<EngineCommand>) {
                     }
                 }
                 let _ = tx_oneshot.send(user_orders);
+            }
+            EngineCommand::GetDepth { tx_oneshot } => {
+                let mut bids_out = Vec::new();
+                let mut asks_out = Vec::new();
+
+                for (price, queue) in orderbook.bids.iter().rev().take(10) {
+                    let total_qty_bids: u64 = queue.iter().map(|o| o.quantity).sum();
+
+                    bids_out.push(DepthLevel {
+                        price: math::micro_to_price_string(*price),
+                        quantity: math::sats_to_btc_string(total_qty_bids),
+                    })
+                }
+
+                for (price, queue) in orderbook.asks.iter().take(10) {
+                    let total_qty_asks: u64 = queue.iter().map(|o| o.quantity).sum();
+
+                    asks_out.push(DepthLevel {
+                        price: math::micro_to_price_string(*price),
+                        quantity: math::sats_to_btc_string(total_qty_asks),
+                    });
+                }
+                let _ = tx_oneshot.send(DepthResponse {
+                    bids: bids_out,
+                    asks: asks_out
+                });
             }
         }
     }

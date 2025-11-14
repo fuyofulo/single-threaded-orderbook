@@ -43,3 +43,13 @@ pub fn price_to_micro_str(s: &str) -> Result<u64, String> {
 
     Ok(micro.to_u64().ok_or("overflow converting price to u64")?)
 }
+
+pub fn micro_to_price_string(micro: u64) -> String {
+    let dec = Decimal::from(micro) / Decimal::from(1_000_000u64);
+    dec.normalize().to_string()
+}
+
+pub fn sats_to_btc_string(sats: u64) -> String {
+    let dec = Decimal::from(sats) / Decimal::from(100_000_000u64);
+    dec.normalize().to_string()
+}

@@ -1,4 +1,4 @@
-use actix_web::{HttpServer, HttpResponse, web, App, Responder, post};
+use actix_web::{HttpServer, HttpResponse, web, App, Responder, post, get};
 use std::sync::mpsc;
 use tokio::sync::oneshot;
 use serde::{Serialize, Deserialize};
@@ -60,6 +60,7 @@ async fn main() -> std::io::Result<()> {
             .service(create_order)
             .service(cancel_order)
             .service(get_user_orders)
+            .service(get_depth)
     })
     .bind(("127.0.0.1", 8080))?
     .run()
@@ -217,4 +218,16 @@ async fn get_user_orders(tx: web::Data<mpsc::Sender<engine::EngineCommand>>, bod
         Err(_) => HttpResponse::InternalServerError().body("engine failed to respond"),
     }
 
+}
+
+#[get("/get_depth")]
+async fn get_depth(tx: web::Data<mpsc::Sender<engine::EngineCommand>>) -> impl Responder {
+    let (tx_oneshot, rx) = oneshot::channel();
+    tx.send(engine::EngineCommand::GetDepth {
+        tx_oneshot
+    }).unwrap();
+    match rx.await {
+        Ok(depth) => HttpResponse::Ok().json(depth),
+        Err(_) => HttpResponse::InternalServerError().body("engine failed to respond"),
+    }
 }
